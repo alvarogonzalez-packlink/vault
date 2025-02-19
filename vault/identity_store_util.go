@@ -758,7 +758,7 @@ func (i *IdentityStore) upsertEntityInTxn(ctx context.Context, txn *memdb.Txn, e
 
 	for index, alias := range entity.Aliases {
 		// Verify that alias is not associated to a different one already
-		aliasByFactors, err := i.MemDBAliasByFactors(alias.MountAccessor, alias.Name, false, false)
+		aliasByFactors, err := i.MemDBAliasByFactorsInTxn(txn, alias.MountAccessor, alias.Name, false, false)
 		if err != nil {
 			return err
 		}
@@ -1008,6 +1008,21 @@ func (i *IdentityStore) cacheTemporaryEntity(ctx context.Context, entity *identi
 	return nil
 }
 
+func splitLocalAliases(entity *identity.Entity) ([]*identity.Alias, []*identity.Alias) {
+	var localAliases []*identity.Alias
+	var nonLocalAliases []*identity.Alias
+
+	for _, alias := range entity.Aliases {
+		if alias.Local {
+			localAliases = append(localAliases, alias)
+		} else {
+			nonLocalAliases = append(nonLocalAliases, alias)
+		}
+	}
+
+	return nonLocalAliases, localAliases
+}
+
 func (i *IdentityStore) persistEntity(ctx context.Context, entity *identity.Entity) error {
 	// If the entity that is passed into this function is resulting from a memdb
 	// query without cloning, then modifying it will result in a direct DB edit,
@@ -1020,17 +1035,7 @@ func (i *IdentityStore) persistEntity(ctx context.Context, entity *identity.Enti
 	}
 
 	// Separate the local and non-local aliases.
-	var localAliases []*identity.Alias
-	var nonLocalAliases []*identity.Alias
-
-	for _, alias := range entity.Aliases {
-		switch alias.Local {
-		case true:
-			localAliases = append(localAliases, alias)
-		default:
-			nonLocalAliases = append(nonLocalAliases, alias)
-		}
-	}
+	nonLocalAliases, localAliases := splitLocalAliases(entity)
 
 	// Store the entity with non-local aliases.
 	entity.Aliases = nonLocalAliases
@@ -2877,40 +2882,6 @@ func attachAlias(t *testing.T, e *identity.Entity, name string, me *MountEntry, 
 	}
 	e.UpsertAlias(a)
 	return a
-}
-
-func TestHelperWriteToStoragePackerForLocalAlias(ctx context.Context, i *IdentityStore, entity *identity.Entity) error {
-	// Separate the local and non-local aliases.
-	var localAliases []*identity.Alias
-
-	for _, alias := range entity.Aliases {
-		switch alias.Local {
-		case true:
-			localAliases = append(localAliases, alias)
-		}
-	}
-
-	if len(localAliases) == 0 {
-		return nil
-	}
-
-	// Store the local aliases separately.
-	aliases := &identity.LocalAliases{
-		Aliases: localAliases,
-	}
-
-	marshaledAliases, err := anypb.New(aliases)
-	if err != nil {
-		return err
-	}
-	if err := i.localAliasPacker.PutItem(ctx, &storagepacker.Item{
-		ID:      entity.ID,
-		Message: marshaledAliases,
-	}); err != nil {
-		return err
-	}
-
-	return nil
 }
 
 func identityCreateCaseDuplicates(t *testing.T, ctx context.Context, c *Core, upme, localme *MountEntry, seed *rand.Rand) {
